@@ -132,7 +132,7 @@ a{color:var(--info)}
 <script>
 'use strict';
 // ---------- constants ----------
-const FEE = 0.05, SLIP_IN = 0.01, SLIP_OUT = 0.02, TICK_MS = 2500, EVAL_AT_MS = 10000, MAX_TRACK = 90;
+const FEE = 0.05, SLIP_IN = 0.01, SLIP_OUT = 0.02, TICK_MS = 4000, EVAL_AT_MS = 10000, MAX_TRACK = 90;
 const PUMP_PROGRAM = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 const RPCS = ['https://solana-rpc.publicnode.com','https://api.mainnet-beta.solana.com','https://public.rpc.solanavibestation.com'];
 const LS_KEY = 'tpb_state_v1', LS_CFG = 'tpb_cfg_v1', LS_COINS = 'tpb_coins_v1';
@@ -230,8 +230,10 @@ async function curvePrices(curves){   // curves: base58 keys (<=10 per call)
   const out = {};
   for (let i=0;i<curves.length;i+=10){
     const b = curves.slice(i,i+10);
-    const res = await rpc('getMultipleAccounts',[b,{encoding:'base64',commitment:'processed'}]);
-    (res.value||[]).forEach((a,j)=>{ if(a&&a.data&&a.data[0]) out[b[j]] = parseCurve(a.data[0]); });
+    try{
+      const res = await rpc('getMultipleAccounts',[b,{encoding:'base64',commitment:'processed'}]);
+      (res.value||[]).forEach((a,j)=>{ if(a&&a.data&&a.data[0]) out[b[j]] = parseCurve(a.data[0]); });
+    }catch(e){ S.rpcErrors=(S.rpcErrors||0)+1; }
   }
   return out;
 }
@@ -264,7 +266,7 @@ const BQ = []; let bBusy = false;
 function queueBundleCheck(c){ if (BQ.length < 40) { BQ.push(c); runBundleQueue(); } }
 async function runBundleQueue(){
   if (bBusy) return; bBusy = true;
-  try{ while (BQ.length){ const c = BQ.shift(); try{ c.bundle = await bundleCheck(c.mint); }catch(e){ c.bundle = {err:e.message}; } await new Promise(r=>setTimeout(r,400)); } }
+  try{ while (BQ.length){ const c = BQ.shift(); try{ c.bundle = await bundleCheck(c.mint); }catch(e){ c.bundle = {err:e.message}; } await new Promise(r=>setTimeout(r,1500)); } }
   finally{ bBusy = false; }
 }
 function clusterMax(vals, tol){   // largest group of values within tol (relative) of each other
@@ -375,10 +377,11 @@ async function tick(){
     const track = Object.values(coins).filter(c=>openMints[c.mint] && c.curve && !c.migrated);
     const curves = [...new Set([...due.map(c=>c.curve), ...track.map(c=>c.curve)])].slice(0, MAX_TRACK);
     let prices = {};
-    if (curves.length) prices = await curvePrices(curves);
+    if (curves.length) { try{ prices = await curvePrices(curves); }catch(e){ S.rpcErrors=(S.rpcErrors||0)+1; log('price fetch failed: '+e.message); } }
     // evaluate candidates
     for (const c of due){
       c.evald = true; c.tEval = now;
+      try{
       const p = prices[c.curve]; if(!p){ c.skipped='no-curve'; continue; }
       c.mc10 = p.mcSol; c.mv10 = c.mc0>0 ? p.mcSol/c.mc0 : 1;
       c.txs10 = await sigCount(c.curve, Math.floor(c.t0/1000));
@@ -404,9 +407,11 @@ async function tick(){
       if (c.uni) { S.uniCount = (S.uniCount||0)+1; queueBundleCheck(c); }
       if (main) S.qual++;
       c.entered = Object.keys(S.open).filter(k=>k.endsWith(':'+c.mint)).length;
+      }catch(e){ S.rpcErrors=(S.rpcErrors||0)+1; c.skipped='eval-error'; }
     }
     // manage open positions
     for (const key of Object.keys(S.open)){
+      try{
       const pos = S.open[key]; const c = coins[pos.mint]; const st = STRATS.find(s=>s.id===pos.sid);
       let price = null;
       if (c && c.curve && prices[c.curve]) { const p = prices[c.curve]; if (p.complete) { c.migrated = true; } else price = p.mcSol; }
@@ -418,11 +423,12 @@ async function tick(){
       if (price > pos.peak) pos.peak = price;
       if (st.trail){ if(!pos.armed && price >= pos.entry*(1+st.trailArm)) pos.armed = true; if (pos.armed) pos.stop = Math.max(pos.stop, pos.peak*(1-st.trail)); }
       if (age >= pos.cap) { closePos(key, price, 'time'); continue; }
+      }catch(e){ S.rpcErrors=(S.rpcErrors||0)+1; }
     }
     S.lastUpdate = now;
     if (Object.values(coins).some(c=>!c.evald)) {} // nothing
     render();
-  }catch(e){ log('tick error: '+e.message); }
+  }catch(e){ log('tick error: '+e.message); S.rpcErrors=(S.rpcErrors||0)+1; S.lastUpdate=Date.now(); try{ render(); }catch(x){} }
   finally{ ticking = false; }
 }
 function closePos(key, exitPrice, why){
@@ -484,7 +490,7 @@ function render(){
   const openCount = engine ? Object.keys(S.open).length : (S.openList? S.openList.length : Object.keys(S.open).length);
   $('sOpen').textContent = openCount;
   $('sSince').textContent = S.startedAt ? new Date(S.startedAt).toLocaleDateString([], {month:'short',day:'numeric'})+' '+fmtT(S.startedAt) : '—';
-  $('sUpd').textContent = S.lastUpdate ? fmtT(S.lastUpdate) + (engine && Date.now()-S.lastUpdate>30000 ? ' (stalled)' : '') : '—';
+  $('sUpd').textContent = (S.lastUpdate ? fmtT(S.lastUpdate) + (engine && Date.now()-S.lastUpdate>30000 ? ' (stalled)' : '') : '—') + (S.rpcErrors ? ' · '+S.rpcErrors+' rpc err' : '');
   const pe = $('pEngine'); if (engine){ pe.textContent='engine: running here'; pe.className='pill on'; } else if (cfg.gistId){ pe.textContent='engine: viewing synced results'; pe.className='pill'; } else { pe.textContent='engine: idle'; pe.className='pill off'; }
   $('btnStart').hidden = !!engine; $('btnStop').hidden = !engine;
   const cards = $('cards'); const html = [];
