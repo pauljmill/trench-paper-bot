@@ -188,7 +188,7 @@ function freshState(){
 }
 function load(){
   try{ const c = JSON.parse(localStorage.getItem(LS_CFG)||'{}'); Object.assign(cfg,c); }catch(e){}
-  try{ const s = JSON.parse(localStorage.getItem(LS_KEY)||'null'); if(s && s.v===1){ S = s; for(const st of STRATS) if(!S.strategies[st.id]) S.strategies[st.id]={trades:0,wins:0,sum:0,equity:[0],peakEq:0,maxDD:0,best:0,worst:0,open:0}; } }catch(e){}
+  try{ const s = JSON.parse(localStorage.getItem(LS_KEY)||'null'); if(s && s.v===1){ S = s; for(const st of STRATS){ if(!S.strategies[st.id]) S.strategies[st.id]={trades:0,wins:0,sum:0,equity:[0],peakEq:0,maxDD:0,best:0,worst:0,open:0}; const x=S.strategies[st.id]; for(const k of ['sum','peakEq','maxDD','best','worst']) if(!isFinite(x[k])) x[k]=0; if(!Array.isArray(x.equity)||x.equity.some(v=>!isFinite(v))) x.equity=[0]; } } }catch(e){}
   try{ coins = JSON.parse(localStorage.getItem(LS_COINS)||'{}'); }catch(e){}
   const h = location.hash.match(/g=([A-Za-z0-9]+)/); if(h && !cfg.gistId){ cfg.gistId = h[1]; saveCfg(); }
 }
@@ -428,7 +428,8 @@ async function tick(){
 function closePos(key, exitPrice, why){
   const pos = S.open[key]; if(!pos) return; delete S.open[key];
   const ret = (exitPrice*(1-SLIP_OUT))/pos.entry - 1 - FEE;
-  const st = S.strategies[pos.sid]; st.open = Math.max(0, st.open-1); st.trades++; if(ret>0) st.wins++; st.sum += ret;
+  const st = S.strategies[pos.sid];
+  if (!isFinite(ret) || !isFinite(pos.entry) || pos.entry<=0) { st.open = Math.max(0, st.open-1); log('dropped trade with bad price '+pos.sid+' '+pos.sym); return; } st.open = Math.max(0, st.open-1); st.trades++; if(ret>0) st.wins++; st.sum += ret;
   const eq = st.equity[st.equity.length-1] + ret; st.equity.push(+eq.toFixed(4)); if (st.equity.length>400) st.equity.splice(1, st.equity.length-400);
   st.peakEq = Math.max(st.peakEq, eq); st.maxDD = Math.max(st.maxDD, st.peakEq - eq); st.best = Math.max(st.best, ret); st.worst = Math.min(st.worst, ret);
   const hold = (Date.now()-pos.tOpen)/1000;
