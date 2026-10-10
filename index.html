@@ -76,6 +76,7 @@ a{color:var(--info)}
 
 <div class="strip">
   <div class="stat"><div class="k">Coins seen</div><div class="v" id="sSeen">0</div></div>
+  <div class="stat"><div class="k">Passed filters</div><div class="v" id="sUni">0</div></div>
   <div class="stat"><div class="k">Qualifiers (main)</div><div class="v" id="sQual">0</div></div>
   <div class="stat"><div class="k">Open positions</div><div class="v" id="sOpen">0</div></div>
   <div class="stat"><div class="k">Running since</div><div class="v" id="sSince">—</div></div>
@@ -102,8 +103,8 @@ a{color:var(--info)}
       <input type="text" id="gistId" placeholder="gist id">
     </div>
     <div>
-      <label for="txMin">Main entry threshold: trades in first 10 s (stand-in for the card's second count)</label>
-      <input type="text" id="txMin" value="8">
+      <label for="txMin">Main entry threshold: holders at 10 s (the Terminal card's second number)</label>
+      <input type="text" id="txMin" value="6">
     </div>
     <div>
       <label for="rpcUrl">Solana RPC (public, CORS-enabled)</label>
@@ -114,14 +115,14 @@ a{color:var(--info)}
     <button class="btn" id="btnSave">Save</button>
     <span class="small" id="phoneLink"></span>
   </div>
-  <p class="small">Assumptions baked into every paper trade: entry at the price 10 s after launch plus 1% slippage, exits at the tick price minus 2%, and 5% total fees per round trip. Stops are checked every 2.5 s against the bonding curve, so a wick inside that window can be missed; real fills will be worse than these numbers, not better.</p>
+  <p class="small">Universe = your Terminal New-column filters, checked on-chain at 10 s: pump.fun only, mayhem hidden, cap $3K–$15K, ≥5 txns, ≥$500 volume (proxied as ≥2 SOL in the curve), top-10 holders ≤60%, dev ≤10%. "Not created by a known bot" cannot be checked here. Bundling is tracked for every filtered coin (near-identical token balances, near-identical SOL balances, fresh wallets in the top 8, shared funding wallet, top-3 share) and never affects entries. Assumptions baked into every paper trade: entry at the price 10 s after launch plus 1% slippage, exits at the tick price minus 2%, and 5% total fees per round trip. Stops are checked every 2.5 s against the bonding curve, so a wick inside that window can be missed; real fills will be worse than these numbers, not better.</p>
 </div>
 
 <div class="cards" id="cards"></div>
 
 <div class="box" style="margin-top:12px">
   <h3>Recent closes</h3>
-  <div class="tbl"><table id="tTrades"><thead><tr><th>Time</th><th>Strategy</th><th>Coin</th><th>Entry (SOL mc)</th><th>Exit</th><th>Hold</th><th>Return</th><th>Why</th></tr></thead><tbody></tbody></table></div>
+  <div class="tbl"><table id="tTrades"><thead><tr><th>Time</th><th>Strategy</th><th>Coin</th><th>Entry (SOL mc)</th><th>Exit</th><th>Hold</th><th>Return</th><th>Why</th><th>Bundle flags</th></tr></thead><tbody></tbody></table></div>
 </div>
 <div class="box">
   <h3>Engine log</h3>
@@ -139,40 +140,43 @@ const LS_KEY = 'tpb_state_v1', LS_CFG = 'tpb_cfg_v1', LS_COINS = 'tpb_coins_v1';
 // ---------- strategies (entry is evaluated once, at ~10 s after launch) ----------
 // f = {txs10, mv10, twitter, website, devBuySol, mc10, mc0}
 const STRATS = [
-  {id:'S1', name:'Main: active + handle, trailing', main:true,
-   desc:'≥N trades in first 10 s and an X handle. Stop −10%; once up 30%, trail 40% off the peak; no target; 60-min cap.',
-   entry:(f,c)=>f.txs10>=c.txMin && f.twitter, sl:.10, trailArm:.30, trail:.40, cap:3600},
-  {id:'S2', name:'Main: active + handle, flat +100%',
+  {id:'S1', name:'Main: ≥N holders + handle, trailing', main:true,
+   desc:'Passes your Terminal filters, has ≥N holders at 10 s and an X handle. Stop −10%; once up 30%, trail 40% off the peak; no target; 60-min cap.',
+   entry:(f,c)=>f.uni && f.holders>=c.hMin && f.twitter, sl:.10, trailArm:.30, trail:.40, cap:3600},
+  {id:'S2', name:'Main: ≥N holders + handle, flat +100%',
    desc:'Same entry as S1. Stop −10%, take profit +100%, 60-min cap. The rule that tested +7% out of sample.',
-   entry:(f,c)=>f.txs10>=c.txMin && f.twitter, sl:.10, tp:1.0, cap:3600},
-  {id:'S3', name:'Active, handle not required, trailing',
-   desc:'≥N trades in first 10 s, any coin. Same exits as S1. Tests whether the handle matters.',
-   entry:(f,c)=>f.txs10>=c.txMin, sl:.10, trailArm:.30, trail:.40, cap:3600},
-  {id:'S4', name:'Very active (≥2N), trailing',
-   desc:'Twice the trade threshold. The ≥10 bucket was the strongest in the study but had the fewest coins.',
-   entry:(f,c)=>f.txs10>=2*c.txMin, sl:.10, trailArm:.30, trail:.40, cap:3600},
+   entry:(f,c)=>f.uni && f.holders>=c.hMin && f.twitter, sl:.10, tp:1.0, cap:3600},
+  {id:'S3', name:'≥N holders, handle not required, trailing',
+   desc:'Filters + ≥N holders, any coin. Same exits as S1. Tests whether the handle matters.',
+   entry:(f,c)=>f.uni && f.holders>=c.hMin, sl:.10, trailArm:.30, trail:.40, cap:3600},
+  {id:'S4', name:'≥10 holders, trailing',
+   desc:'Filters + at least 10 holders at 10 s. The strongest bucket in the study, fewest coins.',
+   entry:(f,c)=>f.uni && f.holders>=10, sl:.10, trailArm:.30, trail:.40, cap:3600},
   {id:'S5', name:'Momentum: +20% by 10 s, trailing, 15-min cap',
-   desc:'Cap up at least 20% in the first 10 s, regardless of trade count. Stop −10%, trail 40% after +30%.',
-   entry:(f,c)=>f.mv10>=1.2, sl:.10, trailArm:.30, trail:.40, cap:900},
-  {id:'S6', name:'Active + rising at 10 s, trailing',
-   desc:'≥N trades and cap at least +5% at 10 s. The combined filter from the study (n=40, unproven).',
-   entry:(f,c)=>f.txs10>=c.txMin && f.mv10>=1.05, sl:.10, trailArm:.30, trail:.40, cap:3600},
-  {id:'S7', name:'Scalp: active, +30% / −20%, 5 min',
-   desc:'≥N trades. Quick target and wider stop, closed at 5 min. Expected to lose; kept as a control.',
-   entry:(f,c)=>f.txs10>=c.txMin, sl:.20, tp:.30, cap:300},
-  {id:'S8', name:'Wide stop control: active + handle, −30% / +100%',
+   desc:'Filters + cap up at least 20% in the first 10 s, regardless of holders. Stop −10%, trail 40% after +30%.',
+   entry:(f,c)=>f.uni && f.mv10>=1.2, sl:.10, trailArm:.30, trail:.40, cap:900},
+  {id:'S6', name:'≥N holders + rising at 10 s, trailing',
+   desc:'Filters + ≥N holders and cap at least +5% at 10 s. The combined filter from the study (n=40, unproven).',
+   entry:(f,c)=>f.uni && f.holders>=c.hMin && f.mv10>=1.05, sl:.10, trailArm:.30, trail:.40, cap:3600},
+  {id:'S7', name:'Scalp: ≥N holders, +30% / −20%, 5 min',
+   desc:'Quick target, wider stop, closed at 5 min. Expected to lose; kept as a control.',
+   entry:(f,c)=>f.uni && f.holders>=c.hMin, sl:.20, tp:.30, cap:300},
+  {id:'S8', name:'Wide stop control: S1 entry, −30% / +100%',
    desc:'Same entry as S1 with the old −30% stop. Tests the claim that the tight stop is the whole edge.',
-   entry:(f,c)=>f.txs10>=c.txMin && f.twitter, sl:.30, tp:1.0, cap:3600},
+   entry:(f,c)=>f.uni && f.holders>=c.hMin && f.twitter, sl:.30, tp:1.0, cap:3600},
   {id:'S9', name:'Dev bought ≥1 SOL + handle, trailing',
-   desc:'Creator bought at least 1 SOL at launch and the coin has an X handle. A decu-style launch signal.',
-   entry:(f,c)=>f.devBuySol>=1 && f.twitter, sl:.10, trailArm:.30, trail:.40, cap:3600},
-  {id:'S0', name:'Everything (control)',
-   desc:'Buys one launch in four at random with S1 exits. Should hover near zero; if it does not, the feed or the exits are off.',
-   entry:(f,c)=>f.sample, sl:.10, trailArm:.30, trail:.40, cap:3600},
+   desc:'Filters + creator bought at least 1 SOL at launch and the coin has an X handle. A decu-style launch signal.',
+   entry:(f,c)=>f.uni && f.devBuySol>=1 && f.twitter, sl:.10, trailArm:.30, trail:.40, cap:3600},
+  {id:'S0', name:'Filters only (control)',
+   desc:'One in three coins that pass your Terminal filters, no holder requirement, S1 exits. Shows what the filters alone are worth.',
+   entry:(f,c)=>f.uni && f.sample, sl:.10, trailArm:.30, trail:.40, cap:3600},
+  {id:'SX', name:'Unfiltered launches (control)',
+   desc:'One in eight raw pump.fun launches, no filters, S1 exits. Should be the worst card on the page.',
+   entry:(f,c)=>f.sampleAll, sl:.10, trailArm:.30, trail:.40, cap:3600},
 ];
 
 // ---------- state ----------
-let cfg = {gistToken:'', gistId:'', txMin:8, rpcUrl:RPCS[0]};
+let cfg = {gistToken:'', gistId:'', hMin:6, rpcUrl:RPCS[0]};
 let S = freshState();
 let coins = {};           // mint -> coin record (engine device only)
 let engine = null;        // engine runtime
@@ -237,6 +241,82 @@ async function sigCount(curve, sinceSec){
 async function dexPrice(mint){
   try{ const r = await fetch('https://api.dexscreener.com/tokens/v1/solana/'+mint); const j = await r.json(); let best=null; for(const p of j||[]) if(!best || (p.liquidity&&p.liquidity.usd||0)>(best.liquidity&&best.liquidity.usd||0)) best=p; if(best && best.priceNative) return parseFloat(best.priceNative)*1e9; }catch(e){} return null;
 }
+let SOLUSD = {v:0, t:0};
+async function solUsd(){
+  if (Date.now()-SOLUSD.t < 300000 && SOLUSD.v>0) return SOLUSD.v;
+  try{ const r = await fetch('https://api.dexscreener.com/tokens/v1/solana/So11111111111111111111111111111111111111112'); const j = await r.json(); let best=null; for(const p of j||[]) if(!best || (p.liquidity&&p.liquidity.usd||0)>(best.liquidity&&best.liquidity.usd||0)) best=p; if(best && best.priceUsd){ SOLUSD = {v:parseFloat(best.priceUsd), t:Date.now()}; } }catch(e){}
+  return SOLUSD.v || 0;
+}
+async function holderStats(mint){
+  // top token accounts; the largest is the bonding curve itself and is excluded
+  try{
+    const r = await rpc('getTokenLargestAccounts',[mint,{commitment:'processed'}]);
+    const accts = (r && r.value || []).map(a=>a.uiAmount||0).filter(x=>x>0).sort((a,b)=>b-a);
+    if (!accts.length) return {holders:0, top10:0};
+    const curveIdx = accts[0] > 2e8 ? 1 : 0;              // >200M tokens = the curve
+    const rest = accts.slice(curveIdx);
+    const top10 = rest.slice(0,10).reduce((a,b)=>a+b,0)/1e9;
+    return {holders: rest.length, top10, capped: rest.length>=19};
+  }catch(e){ return {holders:null, top10:null}; }
+}
+// ---------- bundling diagnostics (tracked, not traded on) ----------
+const BQ = []; let bBusy = false;
+function queueBundleCheck(c){ if (BQ.length < 40) { BQ.push(c); runBundleQueue(); } }
+async function runBundleQueue(){
+  if (bBusy) return; bBusy = true;
+  try{ while (BQ.length){ const c = BQ.shift(); try{ c.bundle = await bundleCheck(c.mint); }catch(e){ c.bundle = {err:e.message}; } await new Promise(r=>setTimeout(r,400)); } }
+  finally{ bBusy = false; }
+}
+function clusterMax(vals, tol){   // largest group of values within tol (relative) of each other
+  const v = vals.filter(x=>x>0).sort((a,b)=>a-b); let best=1;
+  for (let i=0;i<v.length;i++){ let n=1; for (let j=i+1;j<v.length;j++){ if ((v[j]-v[i])/v[i] <= tol) n++; else break; } best=Math.max(best,n); }
+  return v.length?best:0;
+}
+async function bundleCheck(mint){
+  const out = {};
+  const la = await rpc('getTokenLargestAccounts',[mint,{commitment:'confirmed'}]);
+  let accts = (la && la.value || []).filter(a=>(a.uiAmount||0)>0).sort((a,b)=>b.uiAmount-a.uiAmount);
+  if (accts.length && accts[0].uiAmount > 2e8) accts = accts.slice(1);          // drop the curve
+  accts = accts.slice(0,10);
+  const amts = accts.map(a=>a.uiAmount);
+  out.topN = amts.length;
+  out.dupTokenBal = clusterMax(amts, 0.02);                                      // near-identical token balances
+  out.top3Share = +(amts.slice(0,3).reduce((a,b)=>a+b,0)/1e9).toFixed(3);
+  if (!accts.length) return out;
+  // owners of those token accounts
+  const ta = await rpc('getMultipleAccounts',[accts.map(a=>a.address),{encoding:'jsonParsed',commitment:'confirmed'}]);
+  const owners = (ta && ta.value || []).map(a=>{ try{ return a.data.parsed.info.owner; }catch(e){ return null; } }).filter(Boolean);
+  out.owners = owners.length;
+  if (!owners.length) return out;
+  // SOL balances of the owners
+  const oa = await rpc('getMultipleAccounts',[owners.slice(0,10),{encoding:'base64',commitment:'confirmed'}]);
+  const sols = (oa && oa.value || []).map(a=>a? a.lamports/1e9 : 0);
+  out.dupSolBal = clusterMax(sols, 0.03);                                        // near-identical SOL balances
+  out.medianSol = +(sols.slice().sort((a,b)=>a-b)[Math.floor(sols.length/2)]||0).toFixed(3);
+  // freshness + funders (fresh = at most 3 signatures ever)
+  let fresh = 0; const funders = {};
+  for (const o of owners.slice(0,8)){
+    const sigs = await rpc('getSignaturesForAddress',[o,{limit:4}]).catch(()=>null);
+    if (!sigs) continue;
+    if (sigs.length <= 3){
+      fresh++;
+      const first = sigs[sigs.length-1];
+      try{
+        const tx = await rpc('getTransaction',[first.signature,{encoding:'jsonParsed',maxSupportedTransactionVersion:0,commitment:'confirmed'}]);
+        const keys = (tx && tx.transaction && tx.transaction.message.accountKeys || []).map(k=>k.pubkey||k);
+        const pre = tx && tx.meta && tx.meta.preBalances || [], post = tx && tx.meta && tx.meta.postBalances || [];
+        let funder=null, drop=0; keys.forEach((k,i)=>{ const d=(pre[i]||0)-(post[i]||0); if (k!==o && d>drop){ drop=d; funder=k; } });
+        if (funder) funders[funder] = (funders[funder]||0)+1;
+      }catch(e){}
+    }
+  }
+  out.freshTop = fresh;
+  out.distinctFunders = Object.keys(funders).length;
+  out.sameFunderMax = Math.max(0, ...Object.values(funders));
+  // heuristic flag count, for later analysis only
+  out.flags = (out.dupTokenBal>=3?1:0) + (out.dupSolBal>=3?1:0) + (out.freshTop>=4?1:0) + (out.sameFunderMax>=3?1:0) + (out.top3Share>=0.25?1:0);
+  return out;
+}
 async function fetchMeta(uri){
   if(!uri) return {};
   const cid = (uri.split('/ipfs/')[1]||'').split('?')[0];
@@ -277,7 +357,7 @@ function onCreate(m){
   if (m.pool && m.pool!=='pump') return;           // only pump.fun bonding-curve launches
   const now = Date.now();
   const c = { mint:m.mint, curve:m.bondingCurveKey, name:(m.name||'').slice(0,24), sym:(m.symbol||'').slice(0,12), uri:m.uri||'', t0:now,
-              mc0: m.marketCapSol||0, devBuySol: m.solAmount||0, evald:false, twitter:'', website:'', txs10:null, mc10:null, mv10:null, done:false };
+              mc0: m.marketCapSol||0, devBuySol: m.solAmount||0, devPct:(m.initialBuy||0)/1e9, mayhem: !!m.is_mayhem_mode, evald:false, twitter:'', website:'', txs10:null, mc10:null, mv10:null, done:false };
   coins[m.mint] = c; S.seen++;
   fetchMeta(c.uri).then(meta=>{ Object.assign(c, meta); });
   // limit memory: evaluate only; tracking list handled in tick
@@ -305,7 +385,12 @@ async function tick(){
       if (c.txs10==null) { c.skipped='no-sigs'; continue; }
       if (c.mv10>3 && c.txs10<5) { c.skipped='bad-parse'; continue; }   // curve layout we do not understand
       if (!(c.mc10>5 && c.mc10<5000)) { c.skipped='mc-range'; continue; }
-      const f = {txs10:c.txs10, mv10:c.mv10, twitter:!!c.twitter, website:!!c.website, devBuySol:c.devBuySol, mc10:c.mc10, mc0:c.mc0, sample:(S.seen%4===0)};
+      c.rSol = p.rSol; const su = await solUsd(); c.mcUsd = su ? c.mc10*su : null;
+      const hs = await holderStats(c.mint); c.holders = hs.holders; c.top10 = hs.top10;
+      // Your Terminal "New" filters, as far as they can be checked on-chain at 10 s:
+      // pump.fun only, mayhem hidden, mcap $3K-$15K, txns >= 5, volume >= $500 (proxy: >= 2 SOL net into the curve), top-10 holders <= 60%, dev <= 10%.
+      c.uni = !c.mayhem && c.mcUsd!=null && c.mcUsd>=3000 && c.mcUsd<=15000 && c.txs10>=5 && c.rSol>=2 && (c.top10==null || c.top10<=0.60) && c.devPct<=0.10;
+      const f = {uni:c.uni, holders:c.holders==null?Math.max(0,Math.round((c.txs10||0)*0.6)):c.holders, txs10:c.txs10, mv10:c.mv10, twitter:!!c.twitter, website:!!c.website, devBuySol:c.devBuySol, mc10:c.mc10, mc0:c.mc0, sample:(S.seen%3===0), sampleAll:(S.seen%8===0)};
       let main=false;
       for (const st of STRATS){
         let ok=false; try{ ok = st.entry(f,cfg); }catch(e){}
@@ -316,6 +401,7 @@ async function tick(){
         S.open[key] = {sid:st.id, mint:c.mint, sym:c.sym, entry, peak:entry, stop:entry*(1-st.sl), armed:false, tOpen:now, cap:st.cap, tp:st.tp||null};
         S.strategies[st.id].open++;
       }
+      if (c.uni) { S.uniCount = (S.uniCount||0)+1; queueBundleCheck(c); }
       if (main) S.qual++;
       c.entered = Object.keys(S.open).filter(k=>k.endsWith(':'+c.mint)).length;
     }
@@ -346,7 +432,8 @@ function closePos(key, exitPrice, why){
   const eq = st.equity[st.equity.length-1] + ret; st.equity.push(+eq.toFixed(4)); if (st.equity.length>400) st.equity.splice(1, st.equity.length-400);
   st.peakEq = Math.max(st.peakEq, eq); st.maxDD = Math.max(st.maxDD, st.peakEq - eq); st.best = Math.max(st.best, ret); st.worst = Math.min(st.worst, ret);
   const hold = (Date.now()-pos.tOpen)/1000;
-  S.trades.unshift({t:Date.now(), sid:pos.sid, sym:pos.sym, mint:pos.mint, entry:+pos.entry.toFixed(2), exit:+exitPrice.toFixed(2), hold:Math.round(hold), ret:+ret.toFixed(4), why});
+  const cb = coins[pos.mint] && coins[pos.mint].bundle; const bflags = cb && cb.flags!=null ? cb.flags : null;
+  S.trades.unshift({t:Date.now(), sid:pos.sid, sym:pos.sym, mint:pos.mint, entry:+pos.entry.toFixed(2), exit:+exitPrice.toFixed(2), hold:Math.round(hold), ret:+ret.toFixed(4), why, bflags});
   if (S.trades.length>300) S.trades.length = 300;
   dirty = true; saveState();
 }
@@ -367,7 +454,7 @@ async function syncUp(){
 }
 function exportState(){
   const openList = Object.values(S.open).map(p=>({sid:p.sid,sym:p.sym,entry:+p.entry.toFixed(2),tOpen:p.tOpen}));
-  return {v:1, startedAt:S.startedAt, lastUpdate:S.lastUpdate, seen:S.seen, qual:S.qual, strategies:S.strategies, trades:S.trades.slice(0,120), openList, txMin:cfg.txMin, at:Date.now()};
+  return {v:1, startedAt:S.startedAt, lastUpdate:S.lastUpdate, seen:S.seen, qual:S.qual, uniCount:S.uniCount||0, strategies:S.strategies, trades:S.trades.slice(0,120), openList, hMin:cfg.hMin, at:Date.now()};
 }
 async function syncDown(){
   if (!cfg.gistId || engine) return;
@@ -376,7 +463,7 @@ async function syncDown(){
     if(!r.ok) throw new Error('HTTP '+r.status);
     const j = await r.json(); const f = j.files && j.files['state.json']; if(!f) throw new Error('no state file');
     let txt = f.content; if (f.truncated) { const rr = await fetch(f.raw_url); txt = await rr.text(); }
-    const st = JSON.parse(txt); if (st && st.v===1){ S.startedAt=st.startedAt; S.lastUpdate=st.lastUpdate; S.seen=st.seen; S.qual=st.qual; S.strategies=st.strategies; S.trades=st.trades||[]; S.openList=st.openList||[]; S.remoteAt = st.at; }
+    const st = JSON.parse(txt); if (st && st.v===1){ S.startedAt=st.startedAt; S.lastUpdate=st.lastUpdate; S.seen=st.seen; S.qual=st.qual; S.uniCount=st.uniCount||0; S.strategies=st.strategies; S.trades=st.trades||[]; S.openList=st.openList||[]; S.remoteAt = st.at; }
     $('pSync').textContent='synced '+fmtT(Date.now()); $('pSync').className='pill on'; render();
   }catch(e){ $('pSync').textContent='sync: '+e.message; $('pSync').className='pill err'; }
 }
@@ -392,7 +479,7 @@ function spark(eq){
   return '<svg class="spark" viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none"><line x1="0" y1="'+zero.toFixed(1)+'" x2="'+w+'" y2="'+zero.toFixed(1)+'" stroke="#1f2a36"/><path d="'+d+'" fill="none" stroke="'+col+'" stroke-width="1.6"/><circle cx="'+last[0].toFixed(1)+'" cy="'+last[1].toFixed(1)+'" r="2.5" fill="'+col+'"/></svg>';
 }
 function render(){
-  $('sSeen').textContent = S.seen; $('sQual').textContent = S.qual;
+  $('sSeen').textContent = S.seen; $('sQual').textContent = S.qual; $('sUni').textContent = S.uniCount||0;
   const openCount = engine ? Object.keys(S.open).length : (S.openList? S.openList.length : Object.keys(S.open).length);
   $('sOpen').textContent = openCount;
   $('sSince').textContent = S.startedAt ? new Date(S.startedAt).toLocaleDateString([], {month:'short',day:'numeric'})+' '+fmtT(S.startedAt) : '—';
@@ -413,21 +500,21 @@ function render(){
       '<div class="small">'+nLabel+' · max drawdown '+(s.trades?s.maxDD.toFixed(2)+' SOL':'—')+' · best '+(s.trades?fmtPct(s.best):'—')+' · worst '+(s.trades?fmtPct(s.worst):'—')+'</div></div>');
   }
   cards.innerHTML = html.join('');
-  const tb = $('tTrades').querySelector('tbody'); tb.innerHTML = S.trades.slice(0,40).map(t=>'<tr><td>'+fmtT(t.t)+'</td><td>'+t.sid+'</td><td>'+(t.sym||'')+'</td><td>'+fmtMc(t.entry)+'</td><td>'+fmtMc(t.exit)+'</td><td>'+fmtHold(t.hold)+'</td><td class="'+(t.ret>0?'pos':'neg')+'">'+fmtPct(t.ret)+'</td><td>'+t.why+'</td></tr>').join('') || '<tr><td colspan="8" class="dim">No closed paper trades yet. Start the engine on your laptop and leave the tab open; the first qualifiers close within an hour.</td></tr>';
+  const tb = $('tTrades').querySelector('tbody'); tb.innerHTML = S.trades.slice(0,40).map(t=>'<tr><td>'+fmtT(t.t)+'</td><td>'+t.sid+'</td><td>'+(t.sym||'')+'</td><td>'+fmtMc(t.entry)+'</td><td>'+fmtMc(t.exit)+'</td><td>'+fmtHold(t.hold)+'</td><td class="'+(t.ret>0?'pos':'neg')+'">'+fmtPct(t.ret)+'</td><td>'+t.why+'</td><td>'+(t.bflags==null?'…':t.bflags+'/5')+'</td></tr>').join('') || '<tr><td colspan="9" class="dim">No closed paper trades yet. Start the engine on your laptop and leave the tab open; the first qualifiers close within an hour.</td></tr>';
 }
 function renderPhoneLink(){ const el=$('phoneLink'); if(cfg.gistId){ const u = location.origin+location.pathname+'#g='+cfg.gistId; el.innerHTML = 'Phone link (add to Home Screen): <a href="'+u+'">'+u+'</a>'; } else el.textContent='Phone link appears after the first publish (needs a token).'; }
 function exportCsv(){
-  const rows = Object.values(coins).sort((a,b)=>a.t0-b.t0).map(c=>[new Date(c.t0).toISOString(),c.mint,(c.sym||'').replace(/[",]/g,' '),c.mc0&&c.mc0.toFixed(2),c.devBuySol&&c.devBuySol.toFixed(3),c.twitter?1:0,c.website?1:0,c.txs10==null?'':c.txs10,c.mc10==null?'':c.mc10.toFixed(2),c.mv10==null?'':c.mv10.toFixed(3),c.entered||0].join(','));
-  const csv = 'created_utc,mint,symbol,mc0_sol,dev_buy_sol,has_twitter,has_website,txs_first10s,mc10_sol,move_10s,strategies_entered\n'+rows.join('\n');
+  const rows = Object.values(coins).sort((a,b)=>a.t0-b.t0).map(c=>[new Date(c.t0).toISOString(),c.mint,(c.sym||'').replace(/[",]/g,' '),c.mc0&&c.mc0.toFixed(2),c.devBuySol&&c.devBuySol.toFixed(3),c.twitter?1:0,c.website?1:0,c.txs10==null?'':c.txs10,c.holders==null?'':c.holders,c.top10==null?'':(100*c.top10).toFixed(1),(100*(c.devPct||0)).toFixed(2),c.rSol==null?'':c.rSol.toFixed(2),c.mcUsd==null?'':Math.round(c.mcUsd),c.mc10==null?'':c.mc10.toFixed(2),c.mv10==null?'':c.mv10.toFixed(3),c.uni?1:0,c.entered||0,...(c.bundle&&c.bundle.flags!=null?[c.bundle.flags,c.bundle.dupTokenBal,c.bundle.dupSolBal,c.bundle.freshTop,c.bundle.sameFunderMax,c.bundle.distinctFunders,(100*(c.bundle.top3Share||0)).toFixed(1),c.bundle.medianSol]:['','','','','','','',''])].join(','));
+  const csv = 'created_utc,mint,symbol,mc0_sol,dev_buy_sol,has_twitter,has_website,txs_first10s,holders_10s,top10_pct,dev_pct,sol_in_curve_10s,mc10_usd,mc10_sol,move_10s,passes_filters,strategies_entered,bundle_flags,dup_token_balances,dup_sol_balances,fresh_wallets_top8,same_funder_max,distinct_funders,top3_share_pct,median_holder_sol\n'+rows.join('\n');
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'})); a.download = 'trench_coins.csv'; a.click();
 }
 
 // ---------- wire up ----------
 load();
-$('gistToken').value = cfg.gistToken||''; $('gistId').value = cfg.gistId||''; $('txMin').value = cfg.txMin; $('rpcUrl').value = cfg.rpcUrl;
+$('gistToken').value = cfg.gistToken||''; $('gistId').value = cfg.gistId||''; $('txMin').value = cfg.hMin; $('rpcUrl').value = cfg.rpcUrl;
 $('btnStart').onclick = startEngine; $('btnStop').onclick = stopEngine;
 $('btnSettings').onclick = ()=>{ $('settings').hidden = !$('settings').hidden; renderPhoneLink(); };
-$('btnSave').onclick = ()=>{ cfg.gistToken = $('gistToken').value.trim(); cfg.gistId = $('gistId').value.trim(); cfg.txMin = Math.max(1, parseInt($('txMin').value)||8); cfg.rpcUrl = $('rpcUrl').value.trim()||RPCS[0]; saveCfg(); renderPhoneLink(); log('settings saved'); if(cfg.gistToken && engine) syncUp(); else syncDown(); };
+$('btnSave').onclick = ()=>{ cfg.gistToken = $('gistToken').value.trim(); cfg.gistId = $('gistId').value.trim(); cfg.hMin = Math.max(1, parseInt($('txMin').value)||6); cfg.rpcUrl = $('rpcUrl').value.trim()||RPCS[0]; saveCfg(); renderPhoneLink(); log('settings saved'); if(cfg.gistToken && engine) syncUp(); else syncDown(); };
 $('btnCsv').onclick = exportCsv;
 $('btnReset').onclick = ()=>{ if($('btnReset').dataset.arm==='1'){ S = freshState(); coins = {}; saveState(); saveCoins(); dirty=true; render(); $('btnReset').textContent='Reset paper book'; delete $('btnReset').dataset.arm; log('paper book reset'); } else { $('btnReset').dataset.arm='1'; $('btnReset').textContent='Tap again to confirm reset'; setTimeout(()=>{ $('btnReset').textContent='Reset paper book'; delete $('btnReset').dataset.arm; }, 4000); } };
 render(); renderPhoneLink();
