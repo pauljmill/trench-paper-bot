@@ -167,8 +167,8 @@ const STRATS = [
    desc:'Creator bought at least 1 SOL at launch and the coin has an X handle. A decu-style launch signal.',
    entry:(f,c)=>f.devBuySol>=1 && f.twitter, sl:.10, trailArm:.30, trail:.40, cap:3600},
   {id:'S0', name:'Everything (control)',
-   desc:'Buys every launch with S1 exits. Should hover near zero; if it does not, the feed or the exits are off.',
-   entry:(f,c)=>true, sl:.10, trailArm:.30, trail:.40, cap:3600},
+   desc:'Buys one launch in four at random with S1 exits. Should hover near zero; if it does not, the feed or the exits are off.',
+   entry:(f,c)=>f.sample, sl:.10, trailArm:.30, trail:.40, cap:3600},
 ];
 
 // ---------- state ----------
@@ -250,12 +250,18 @@ function startEngine(){
   if (engine) return;
   engine = {ws:null, timer:null, stop:false, lastMsg:0, sinceReconnect:0};
   if(!S.startedAt) S.startedAt = Date.now();
-  connectWS(); engine.timer = setInterval(tick, TICK_MS); engine.hb = setInterval(heartbeat, 60000);
+  connectWS();
+  // Timers run in a Web Worker: Chrome slows a hidden tab's own timers to once a minute, a worker's are not throttled.
+  try{
+    const src = 'let n=0;setInterval(()=>{n++;postMessage(n%24===0?"hb":"tick")},'+TICK_MS+');';
+    engine.worker = new Worker(URL.createObjectURL(new Blob([src],{type:'application/javascript'})));
+    engine.worker.onmessage = (e)=>{ if(e.data==='hb') heartbeat(); tick(); };
+  }catch(e){ engine.timer = setInterval(tick, TICK_MS); engine.hb = setInterval(heartbeat, 60000); log('worker unavailable, using page timers'); }
   try{ navigator.wakeLock && navigator.wakeLock.request('screen').catch(()=>{}); }catch(e){}
   log('engine started'); render();
 }
 function stopEngine(){
-  if(!engine) return; engine.stop = true; try{ engine.ws && engine.ws.close(); }catch(e){} clearInterval(engine.timer); clearInterval(engine.hb); engine = null; log('engine stopped'); render();
+  if(!engine) return; engine.stop = true; try{ engine.ws && engine.ws.close(); }catch(e){} clearInterval(engine.timer); clearInterval(engine.hb); try{ engine.worker && engine.worker.terminate(); }catch(e){} engine = null; log('engine stopped'); render();
 }
 function connectWS(){
   if(!engine || engine.stop) return;
@@ -268,6 +274,7 @@ function connectWS(){
 }
 function onCreate(m){
   if (coins[m.mint]) return;
+  if (m.pool && m.pool!=='pump') return;           // only pump.fun bonding-curve launches
   const now = Date.now();
   const c = { mint:m.mint, curve:m.bondingCurveKey, name:(m.name||'').slice(0,24), sym:(m.symbol||'').slice(0,12), uri:m.uri||'', t0:now,
               mc0: m.marketCapSol||0, devBuySol: m.solAmount||0, evald:false, twitter:'', website:'', txs10:null, mc10:null, mv10:null, done:false };
@@ -296,7 +303,9 @@ async function tick(){
       c.mc10 = p.mcSol; c.mv10 = c.mc0>0 ? p.mcSol/c.mc0 : 1;
       c.txs10 = await sigCount(c.curve, Math.floor(c.t0/1000));
       if (c.txs10==null) { c.skipped='no-sigs'; continue; }
-      const f = {txs10:c.txs10, mv10:c.mv10, twitter:!!c.twitter, website:!!c.website, devBuySol:c.devBuySol, mc10:c.mc10, mc0:c.mc0};
+      if (c.mv10>3 && c.txs10<5) { c.skipped='bad-parse'; continue; }   // curve layout we do not understand
+      if (!(c.mc10>5 && c.mc10<5000)) { c.skipped='mc-range'; continue; }
+      const f = {txs10:c.txs10, mv10:c.mv10, twitter:!!c.twitter, website:!!c.website, devBuySol:c.devBuySol, mc10:c.mc10, mc0:c.mc0, sample:(S.seen%4===0)};
       let main=false;
       for (const st of STRATS){
         let ok=false; try{ ok = st.entry(f,cfg); }catch(e){}
@@ -387,7 +396,7 @@ function render(){
   const openCount = engine ? Object.keys(S.open).length : (S.openList? S.openList.length : Object.keys(S.open).length);
   $('sOpen').textContent = openCount;
   $('sSince').textContent = S.startedAt ? new Date(S.startedAt).toLocaleDateString([], {month:'short',day:'numeric'})+' '+fmtT(S.startedAt) : '—';
-  $('sUpd').textContent = S.lastUpdate ? fmtT(S.lastUpdate) : '—';
+  $('sUpd').textContent = S.lastUpdate ? fmtT(S.lastUpdate) + (engine && Date.now()-S.lastUpdate>30000 ? ' (stalled)' : '') : '—';
   const pe = $('pEngine'); if (engine){ pe.textContent='engine: running here'; pe.className='pill on'; } else if (cfg.gistId){ pe.textContent='engine: viewing synced results'; pe.className='pill'; } else { pe.textContent='engine: idle'; pe.className='pill off'; }
   $('btnStart').hidden = !!engine; $('btnStop').hidden = !engine;
   const cards = $('cards'); const html = [];
