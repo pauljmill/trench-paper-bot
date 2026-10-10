@@ -227,14 +227,16 @@ function parseCurve(b64){
   const mcSol = vTok>0 ? (vSol/1e9)/(vTok/1e6)*1e9 : 0;   // market cap in SOL at 1B supply
   return {mcSol, vSol:vSol/1e9, rSol:rSol/1e9, complete};
 }
-async function curvePrices(curves){   // curves: base58 keys (<=10 per call)
-  const out = {};
-  for (let i=0;i<curves.length;i+=10){
-    const b = curves.slice(i,i+10);
-    try{
-      const res = await rpc('getMultipleAccounts',[b,{encoding:'base64',commitment:'processed'}]);
-      (res.value||[]).forEach((a,j)=>{ if(a&&a.data&&a.data[0]) out[b[j]] = parseCurve(a.data[0]); });
-    }catch(e){ S.rpcErrors=(S.rpcErrors||0)+1; }
+async function curvePrices(curves){   // curves: base58 keys, 10 per call, 4 calls in flight at a time
+  const out = {}; const batches = [];
+  for (let i=0;i<curves.length;i+=10) batches.push(curves.slice(i,i+10));
+  for (let i=0;i<batches.length;i+=4){
+    await Promise.all(batches.slice(i,i+4).map(async (b)=>{
+      try{
+        const res = await rpc('getMultipleAccounts',[b,{encoding:'base64',commitment:'processed'}]);
+        (res.value||[]).forEach((a,j)=>{ if(a&&a.data&&a.data[0]) out[b[j]] = parseCurve(a.data[0]); });
+      }catch(e){ S.rpcErrors=(S.rpcErrors||0)+1; }
+    }));
   }
   return out;
 }
@@ -369,7 +371,7 @@ function onCreate(m){
 let ticking = false, tickStarted = 0;
 async function tick(){
   if (!engine) return;
-  if (ticking){ if (Date.now()-tickStarted > 30000){ log('watchdog: previous cycle hung, resetting'); ticking = false; } else return; }
+  if (ticking){ if (Date.now()-tickStarted > 60000){ log('watchdog: previous cycle hung, resetting'); ticking = false; } else return; }
   ticking = true; tickStarted = Date.now();
   try{
     const now = Date.now();
@@ -382,15 +384,15 @@ async function tick(){
     let prices = {};
     if (curves.length) { try{ prices = await curvePrices(curves); }catch(e){ S.rpcErrors=(S.rpcErrors||0)+1; log('price fetch failed: '+e.message); } }
     // evaluate candidates
-    for (const c of due){
+    const evalOne = async (c)=>{
       c.evald = true; c.tEval = now;
       try{
-      const p = prices[c.curve]; if(!p){ c.skipped='no-curve'; continue; }
+      const p = prices[c.curve]; if(!p){ c.skipped='no-curve'; return; }
       c.mc10 = p.mcSol; c.mv10 = c.mc0>0 ? p.mcSol/c.mc0 : 1;
       c.txs10 = await sigCount(c.curve, Math.floor(c.t0/1000));
-      if (c.txs10==null) { c.skipped='no-sigs'; continue; }
-      if (c.mv10>3 && c.txs10<5) { c.skipped='bad-parse'; continue; }   // curve layout we do not understand
-      if (!(c.mc10>5 && c.mc10<5000)) { c.skipped='mc-range'; continue; }
+      if (c.txs10==null) { c.skipped='no-sigs'; return; }
+      if (c.mv10>3 && c.txs10<5) { c.skipped='bad-parse'; return; }   // curve layout we do not understand
+      if (!(c.mc10>5 && c.mc10<5000)) { c.skipped='mc-range'; return; }
       c.rSol = p.rSol; const su = await solUsd(); c.mcUsd = su ? c.mc10*su : null;
       const hs = await holderStats(c.mint); c.holders = hs.holders; c.top10 = hs.top10;
       // Your Terminal "New" filters, as far as they can be checked on-chain at 10 s:
@@ -411,7 +413,8 @@ async function tick(){
       if (main) S.qual++;
       c.entered = Object.keys(S.open).filter(k=>k.endsWith(':'+c.mint)).length;
       }catch(e){ S.rpcErrors=(S.rpcErrors||0)+1; c.skipped='eval-error'; }
-    }
+    };
+    for (let i=0;i<due.length;i+=3) await Promise.all(due.slice(i,i+3).map(evalOne));
     // manage open positions
     for (const key of Object.keys(S.open)){
       try{
@@ -428,7 +431,7 @@ async function tick(){
       if (age >= pos.cap) { closePos(key, price, 'time'); continue; }
       }catch(e){ S.rpcErrors=(S.rpcErrors||0)+1; }
     }
-    S.lastUpdate = now;
+    S.lastUpdate = Date.now(); S.cycleMs = Date.now()-now;
     if (Object.values(coins).some(c=>!c.evald)) {} // nothing
     render();
   }catch(e){ log('tick error: '+e.message); S.rpcErrors=(S.rpcErrors||0)+1; S.lastUpdate=Date.now(); try{ render(); }catch(x){} }
@@ -493,7 +496,7 @@ function render(){
   const openCount = engine ? Object.keys(S.open).length : (S.openList? S.openList.length : Object.keys(S.open).length);
   $('sOpen').textContent = openCount;
   $('sSince').textContent = S.startedAt ? new Date(S.startedAt).toLocaleDateString([], {month:'short',day:'numeric'})+' '+fmtT(S.startedAt) : '—';
-  $('sUpd').textContent = (S.lastUpdate ? fmtT(S.lastUpdate) + (engine && Date.now()-S.lastUpdate>30000 ? ' (stalled)' : '') : '—') + (S.rpcErrors ? ' · '+S.rpcErrors+' rpc err' : '');
+  $('sUpd').textContent = (S.lastUpdate ? fmtT(S.lastUpdate) + (engine && Date.now()-S.lastUpdate>45000 ? ' (stalled)' : '') : '—') + (S.cycleMs ? ' · '+(S.cycleMs/1000).toFixed(1)+'s cycle' : '') + (S.rpcErrors ? ' · '+S.rpcErrors+' rpc err' : '');
   const pe = $('pEngine'); if (engine){ pe.textContent='engine: running here'; pe.className='pill on'; } else if (cfg.gistId){ pe.textContent='engine: viewing synced results'; pe.className='pill'; } else { pe.textContent='engine: idle'; pe.className='pill off'; }
   $('btnStart').hidden = !!engine; $('btnStop').hidden = !engine;
   const cards = $('cards'); const html = [];
