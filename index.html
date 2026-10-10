@@ -115,14 +115,14 @@ a{color:var(--info)}
     <button class="btn" id="btnSave">Save</button>
     <span class="small" id="phoneLink"></span>
   </div>
-  <p class="small">Universe = your Terminal New-column filters, checked on-chain at 10 s: pump.fun only, mayhem hidden, cap $3K–$15K, ≥5 txns, ≥$500 volume (proxied as ≥2 SOL in the curve), top-10 holders ≤60%, dev ≤10%. "Not created by a known bot" cannot be checked here. Bundling is tracked for every filtered coin (near-identical token balances, near-identical SOL balances, fresh wallets in the top 8, shared funding wallet, top-3 share) and never affects entries. Assumptions baked into every paper trade: entry at the price 10 s after launch plus 1% slippage, exits at the tick price minus 2%, and 5% total fees per round trip. Stops are checked every 2.5 s against the bonding curve, so a wick inside that window can be missed; real fills will be worse than these numbers, not better.</p>
+  <p class="small">Universe = your Terminal New-column filters, checked on-chain at 10 s: pump.fun only, mayhem hidden, cap $3K–$15K, ≥5 txns, ≥$500 volume (proxied as ≥2 SOL in the curve), top-10 holders ≤60%, dev ≤10%. "Not created by a known bot" cannot be checked here. Bundling is tracked for every filtered coin (near-identical token balances, near-identical SOL balances, fresh wallets in the top 8, shared funding wallet, top-3 share) and never affects entries. Assumptions baked into every paper trade: entry at the price 10 s after launch plus 1% slippage, exits at the tick price minus 2%, and 5% total fees per round trip. Stops are checked every few seconds against the bonding curve, so a wick inside that window can be missed; real fills will be worse than these numbers, not better.</p>
 </div>
 
 <div class="cards" id="cards"></div>
 
 <div class="box" style="margin-top:12px">
   <h3>Recent closes</h3>
-  <div class="tbl"><table id="tTrades"><thead><tr><th>Time</th><th>Strategy</th><th>Coin</th><th>Entry (SOL mc)</th><th>Exit</th><th>Hold</th><th>Return</th><th>Why</th><th>Bundle flags</th></tr></thead><tbody></tbody></table></div>
+  <div class="tbl"><table id="tTrades"><thead><tr><th>Time</th><th>Strategy</th><th>Coin</th><th>Entry (SOL mc)</th><th>Exit</th><th>Hold</th><th>Return</th><th>Why</th><th>Fill vs stop</th><th>Bundle flags</th></tr></thead><tbody></tbody></table></div>
 </div>
 <div class="box">
   <h3>Engine log</h3>
@@ -171,7 +171,7 @@ const STRATS = [
    desc:'One in three coins that pass your Terminal filters, no holder requirement, S1 exits. Shows what the filters alone are worth.',
    entry:(f,c)=>f.uni && f.sample, sl:.10, trailArm:.30, trail:.40, cap:3600},
   {id:'SX', name:'Unfiltered launches (control)',
-   desc:'One in eight raw pump.fun launches, no filters, S1 exits. Should be the worst card on the page.',
+   desc:'One in forty raw pump.fun launches, no filters, S1 exits. Should be the worst card on the page.',
    entry:(f,c)=>f.sampleAll, sl:.10, trailArm:.30, trail:.40, cap:3600},
 ];
 
@@ -398,12 +398,13 @@ async function tick(){
       // Your Terminal "New" filters, as far as they can be checked on-chain at 10 s:
       // pump.fun only, mayhem hidden, mcap $3K-$15K, txns >= 5, volume >= $500 (proxy: >= 2 SOL net into the curve), top-10 holders <= 60%, dev <= 10%.
       c.uni = !c.mayhem && c.mcUsd!=null && c.mcUsd>=3000 && c.mcUsd<=15000 && c.txs10>=5 && c.rSol>=2 && (c.top10==null || c.top10<=0.60) && c.devPct<=0.10;
-      const f = {uni:c.uni, holders:c.holders==null?Math.max(0,Math.round((c.txs10||0)*0.6)):c.holders, txs10:c.txs10, mv10:c.mv10, twitter:!!c.twitter, website:!!c.website, devBuySol:c.devBuySol, mc10:c.mc10, mc0:c.mc0, sample:(S.seen%3===0), sampleAll:(S.seen%8===0)};
+      const f = {uni:c.uni, holders:c.holders==null?Math.max(0,Math.round((c.txs10||0)*0.6)):c.holders, txs10:c.txs10, mv10:c.mv10, twitter:!!c.twitter, website:!!c.website, devBuySol:c.devBuySol, mc10:c.mc10, mc0:c.mc0, sample:(S.seen%3===0), sampleAll:(S.seen%40===0)};
       let main=false;
       for (const st of STRATS){
         let ok=false; try{ ok = st.entry(f,cfg); }catch(e){}
         if (!ok) continue;
         if (st.main) main = true;
+        if (S.strategies[st.id].open >= 60) continue;            // cap open positions per strategy
         const entry = c.mc10 * (1+SLIP_IN);
         const key = st.id+':'+c.mint;
         S.open[key] = {sid:st.id, mint:c.mint, sym:c.sym, entry, peak:entry, stop:entry*(1-st.sl), armed:false, tOpen:now, cap:st.cap, tp:st.tp||null};
@@ -446,7 +447,8 @@ function closePos(key, exitPrice, why){
   st.peakEq = Math.max(st.peakEq, eq); st.maxDD = Math.max(st.maxDD, st.peakEq - eq); st.best = Math.max(st.best, ret); st.worst = Math.min(st.worst, ret);
   const hold = (Date.now()-pos.tOpen)/1000;
   const cb = coins[pos.mint] && coins[pos.mint].bundle; const bflags = cb && cb.flags!=null ? cb.flags : null;
-  S.trades.unshift({t:Date.now(), sid:pos.sid, sym:pos.sym, mint:pos.mint, entry:+pos.entry.toFixed(2), exit:+exitPrice.toFixed(2), hold:Math.round(hold), ret:+ret.toFixed(4), why, bflags});
+  const gap = (why==='stop'||why==='trail') ? +((exitPrice/pos.stop - 1)).toFixed(3) : null;   // how far below the stop level the fill landed
+  S.trades.unshift({t:Date.now(), sid:pos.sid, sym:pos.sym, mint:pos.mint, entry:+pos.entry.toFixed(2), exit:+exitPrice.toFixed(2), hold:Math.round(hold), ret:+ret.toFixed(4), why, bflags, gap});
   if (S.trades.length>300) S.trades.length = 300;
   dirty = true; saveState();
 }
@@ -513,7 +515,7 @@ function render(){
       '<div class="small">'+nLabel+' · max drawdown '+(s.trades?s.maxDD.toFixed(2)+' SOL':'—')+' · best '+(s.trades?fmtPct(s.best):'—')+' · worst '+(s.trades?fmtPct(s.worst):'—')+'</div></div>');
   }
   cards.innerHTML = html.join('');
-  const tb = $('tTrades').querySelector('tbody'); tb.innerHTML = S.trades.slice(0,40).map(t=>'<tr><td>'+fmtT(t.t)+'</td><td>'+t.sid+'</td><td>'+(t.sym||'')+'</td><td>'+fmtMc(t.entry)+'</td><td>'+fmtMc(t.exit)+'</td><td>'+fmtHold(t.hold)+'</td><td class="'+(t.ret>0?'pos':'neg')+'">'+fmtPct(t.ret)+'</td><td>'+t.why+'</td><td>'+(t.bflags==null?'…':t.bflags+'/5')+'</td></tr>').join('') || '<tr><td colspan="9" class="dim">No closed paper trades yet. Start the engine on your laptop and leave the tab open; the first qualifiers close within an hour.</td></tr>';
+  const tb = $('tTrades').querySelector('tbody'); tb.innerHTML = S.trades.slice(0,40).map(t=>'<tr><td>'+fmtT(t.t)+'</td><td>'+t.sid+'</td><td>'+(t.sym||'')+'</td><td>'+fmtMc(t.entry)+'</td><td>'+fmtMc(t.exit)+'</td><td>'+fmtHold(t.hold)+'</td><td class="'+(t.ret>0?'pos':'neg')+'">'+fmtPct(t.ret)+'</td><td>'+t.why+'</td><td>'+(t.gap==null?'':fmtPct(t.gap))+'</td><td>'+(t.bflags==null?'…':t.bflags+'/5')+'</td></tr>').join('') || '<tr><td colspan="10" class="dim">No closed paper trades yet. Start the engine on your laptop and leave the tab open; the first qualifiers close within an hour.</td></tr>';
 }
 function renderPhoneLink(){ const el=$('phoneLink'); if(cfg.gistId){ const u = location.origin+location.pathname+'#g='+cfg.gistId; el.innerHTML = 'Phone link (add to Home Screen): <a href="'+u+'">'+u+'</a>'; } else el.textContent='Phone link appears after the first publish (needs a token).'; }
 function exportCsv(){
