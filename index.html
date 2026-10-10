@@ -205,12 +205,13 @@ const fmtHold = (s)=> s<60? Math.round(s)+'s' : s<3600? Math.round(s/60)+'m' : (
 function log(msg){ const el=$('log'); const line = new Date().toLocaleTimeString()+'  '+msg; el.textContent = (line+'\n'+el.textContent).split('\n').slice(0,80).join('\n'); }
 
 // base58 decode (for bonding curve key -> not needed; we pass base58 to RPC directly)
+function fetchT(url, opts, ms){ const ctl = new AbortController(); const t = setTimeout(()=>ctl.abort(), ms||8000); return fetch(url, Object.assign({}, opts||{}, {signal: ctl.signal})).finally(()=>clearTimeout(t)); }
 async function rpc(method, params){
   const urls = [cfg.rpcUrl, ...RPCS.filter(u=>u!==cfg.rpcUrl)];
   let lastErr;
   for (const u of urls){
     try{
-      const r = await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})});
+      const r = await fetchT(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})}, 8000);
       const j = await r.json();
       if (j.error){ lastErr = j.error.message; if(/rate|limit|429|blocked/i.test(lastErr)) continue; throw new Error(lastErr); }
       return j.result;
@@ -241,12 +242,12 @@ async function sigCount(curve, sinceSec){
   try{ const r = await rpc('getSignaturesForAddress',[curve,{limit:100}]); return (r||[]).filter(x=>!x.blockTime || x.blockTime>=sinceSec-2).length; }catch(e){ return null; }
 }
 async function dexPrice(mint){
-  try{ const r = await fetch('https://api.dexscreener.com/tokens/v1/solana/'+mint); const j = await r.json(); let best=null; for(const p of j||[]) if(!best || (p.liquidity&&p.liquidity.usd||0)>(best.liquidity&&best.liquidity.usd||0)) best=p; if(best && best.priceNative) return parseFloat(best.priceNative)*1e9; }catch(e){} return null;
+  try{ const r = await fetchT('https://api.dexscreener.com/tokens/v1/solana/'+mint, {}, 6000); const j = await r.json(); let best=null; for(const p of j||[]) if(!best || (p.liquidity&&p.liquidity.usd||0)>(best.liquidity&&best.liquidity.usd||0)) best=p; if(best && best.priceNative) return parseFloat(best.priceNative)*1e9; }catch(e){} return null;
 }
 let SOLUSD = {v:0, t:0};
 async function solUsd(){
   if (Date.now()-SOLUSD.t < 300000 && SOLUSD.v>0) return SOLUSD.v;
-  try{ const r = await fetch('https://api.dexscreener.com/tokens/v1/solana/So11111111111111111111111111111111111111112'); const j = await r.json(); let best=null; for(const p of j||[]) if(!best || (p.liquidity&&p.liquidity.usd||0)>(best.liquidity&&best.liquidity.usd||0)) best=p; if(best && best.priceUsd){ SOLUSD = {v:parseFloat(best.priceUsd), t:Date.now()}; } }catch(e){}
+  try{ const r = await fetchT('https://api.dexscreener.com/tokens/v1/solana/So11111111111111111111111111111111111111112', {}, 6000); const j = await r.json(); let best=null; for(const p of j||[]) if(!best || (p.liquidity&&p.liquidity.usd||0)>(best.liquidity&&best.liquidity.usd||0)) best=p; if(best && best.priceUsd){ SOLUSD = {v:parseFloat(best.priceUsd), t:Date.now()}; } }catch(e){}
   return SOLUSD.v || 0;
 }
 async function holderStats(mint){
@@ -323,7 +324,7 @@ async function fetchMeta(uri){
   if(!uri) return {};
   const cid = (uri.split('/ipfs/')[1]||'').split('?')[0];
   const urls = cid ? ['https://pump.mypinata.cloud/ipfs/'+cid, 'https://gateway.pinata.cloud/ipfs/'+cid, uri] : [uri];
-  for (const u of urls){ try{ const r = await fetch(u); if(!r.ok) continue; const j = await r.json(); return {twitter:(j.twitter||'').trim(), website:(j.website||'').trim(), telegram:(j.telegram||'').trim()}; }catch(e){} }
+  for (const u of urls){ try{ const r = await fetchT(u, {}, 6000); if(!r.ok) continue; const j = await r.json(); return {twitter:(j.twitter||'').trim(), website:(j.website||'').trim(), telegram:(j.telegram||'').trim()}; }catch(e){} }
   return {};
 }
 
@@ -365,9 +366,11 @@ function onCreate(m){
   // limit memory: evaluate only; tracking list handled in tick
   if (S.seen % 20 === 0) saveCoins();
 }
-let ticking = false;
+let ticking = false, tickStarted = 0;
 async function tick(){
-  if (!engine || ticking) return; ticking = true;
+  if (!engine) return;
+  if (ticking){ if (Date.now()-tickStarted > 30000){ log('watchdog: previous cycle hung, resetting'); ticking = false; } else return; }
+  ticking = true; tickStarted = Date.now();
   try{
     const now = Date.now();
     // candidates due for evaluation
