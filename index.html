@@ -66,7 +66,7 @@ a{color:var(--info)}
 </head>
 <body>
 <div class="top">
-  <h1>Trench Paper Bot</h1>
+  <h1>Trench Paper Bot <span class="small dim">v11</span></h1>
   <div style="display:flex;gap:6px;flex-wrap:wrap">
     <span class="pill" id="pEngine">engine: idle</span>
     <span class="pill" id="pFeed">feed: —</span>
@@ -132,16 +132,32 @@ a{color:var(--info)}
 <script>
 'use strict';
 // ---------- constants ----------
-const FEE = 0.05, SLIP_IN = 0.01, SLIP_OUT = 0.02, TICK_MS = 4000, EVAL_AT_MS = 10000, MAX_TRACK = 90;
+const FEE = 0.05, SLIP_IN = 0.01, SLIP_OUT = 0.02, TICK_MS = 4000, EVAL_AT_MS = 10000, MAX_TRACK = 200;   // v11
 const PUMP_PROGRAM = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 const RPCS = ['https://solana-rpc.publicnode.com','https://api.mainnet-beta.solana.com','https://public.rpc.solanavibestation.com'];
 const LS_KEY = 'tpb_state_v1', LS_CFG = 'tpb_cfg_v1', LS_COINS = 'tpb_coins_v1';
 
 // ---------- strategies (entry is evaluated once, at ~10 s after launch) ----------
 // f = {txs10, mv10, twitter, website, devBuySol, mc10, mc0}
+const DUNE = (f)=> !f.mayhem && f.mc10>=25 && f.mc10<=120;   // the universe the Dune backtest used: pump.fun launch, cap 25–120 SOL at eval
 const STRATS = [
-  {id:'S1', name:'Main: ≥N holders + handle, trailing', main:true,
-   desc:'Passes your Terminal filters, has ≥N holders at 10 s and an X handle. Stop −10%; once up 30%, trail 40% off the peak; no target; 60-min cap.',
+  {id:'D1', name:'Dune rule: top-10 hold <70% of float, wide stop, tight trail', main:true,
+   desc:'Mined from ~75k launches on Dune (Oct 8–10): at eval the top-10 holders own <70% of traded float (implies ≥10 holders). Stop −20%; once up 20%, exit 30% off the peak; 60-min cap. Backtest: +13%/trade gross at 5 s, +8% at 10 s, n≈500–900/day, held on an out-of-sample day.',
+   entry:(f,c)=>DUNE(f) && f.top10h!=null && f.top10h<0.70, sl:.20, trailArm:.20, trail:.30, cap:3600},
+  {id:'D2', name:'Dune rule, looser: top-10 <80%',
+   desc:'Same as D1 with the top-10 cut at 80%. Bigger n, smaller edge in the backtest (+9–10% at 5 s, +6% at 10 s).',
+   entry:(f,c)=>DUNE(f) && f.top10h!=null && f.top10h<0.80, sl:.20, trailArm:.20, trail:.30, cap:3600},
+  {id:'D3', name:'Dune rule: ≥20 holders',
+   desc:'Holder count alone (RPC caps at 20, so this is "the list is full"). Backtest +8–10% at 5 s, +4.5% at 10 s. D1 exits.',
+   entry:(f,c)=>DUNE(f) && f.capped, sl:.20, trailArm:.20, trail:.30, cap:3600},
+  {id:'D4', name:'D1 entry, old exits (−10% / +30% arm / 40% trail)',
+   desc:'Isolates the exit change. Backtest says this version makes about half of D1.',
+   entry:(f,c)=>DUNE(f) && f.top10h!=null && f.top10h<0.70, sl:.10, trailArm:.30, trail:.40, cap:3600},
+  {id:'D5', name:'D1 entry + your Terminal filters',
+   desc:'D1 plus the Terminal New-column filters (cap $3–15K, ≥5 txns, top-10 ≤60% of supply, dev ≤10%). Tests whether the filters add or subtract.',
+   entry:(f,c)=>DUNE(f) && f.uni && f.top10h!=null && f.top10h<0.70, sl:.20, trailArm:.20, trail:.30, cap:3600},
+  {id:'S1', name:'Old main: ≥N holders + handle, trailing',
+   desc:'Passes your Terminal filters, has ≥N holders at 10 s and an X handle. Stop −10%; once up 30%, trail 40% off the peak; no target; 60-min cap. Kept for comparison; the Dune backtest says this is about −5% gross.',
    entry:(f,c)=>f.uni && f.holders>=c.hMin && f.twitter, sl:.10, trailArm:.30, trail:.40, cap:3600},
   {id:'S2', name:'Main: ≥N holders + handle, flat +100%',
    desc:'Same entry as S1. Stop −10%, take profit +100%, 60-min cap. The rule that tested +7% out of sample.',
@@ -152,18 +168,6 @@ const STRATS = [
   {id:'S4', name:'≥10 holders, trailing',
    desc:'Filters + at least 10 holders at 10 s. The strongest bucket in the study, fewest coins.',
    entry:(f,c)=>f.uni && f.holders>=10, sl:.10, trailArm:.30, trail:.40, cap:3600},
-  {id:'S5', name:'Momentum: +20% by 10 s, trailing, 15-min cap',
-   desc:'Filters + cap up at least 20% in the first 10 s, regardless of holders. Stop −10%, trail 40% after +30%.',
-   entry:(f,c)=>f.uni && f.mv10>=1.2, sl:.10, trailArm:.30, trail:.40, cap:900},
-  {id:'S6', name:'≥N holders + rising at 10 s, trailing',
-   desc:'Filters + ≥N holders and cap at least +5% at 10 s. The combined filter from the study (n=40, unproven).',
-   entry:(f,c)=>f.uni && f.holders>=c.hMin && f.mv10>=1.05, sl:.10, trailArm:.30, trail:.40, cap:3600},
-  {id:'S7', name:'Scalp: ≥N holders, +30% / −20%, 5 min',
-   desc:'Quick target, wider stop, closed at 5 min. Expected to lose; kept as a control.',
-   entry:(f,c)=>f.uni && f.holders>=c.hMin, sl:.20, tp:.30, cap:300},
-  {id:'S8', name:'Wide stop control: S1 entry, −30% / +100%',
-   desc:'Same entry as S1 with the old −30% stop. Tests the claim that the tight stop is the whole edge.',
-   entry:(f,c)=>f.uni && f.holders>=c.hMin && f.twitter, sl:.30, tp:1.0, cap:3600},
   {id:'S9', name:'Dev bought ≥1 SOL + handle, trailing',
    desc:'Filters + creator bought at least 1 SOL at launch and the coin has an X handle. A decu-style launch signal.',
    entry:(f,c)=>f.uni && f.devBuySol>=1 && f.twitter, sl:.10, trailArm:.30, trail:.40, cap:3600},
@@ -260,9 +264,11 @@ async function holderStats(mint){
     if (!accts.length) return {holders:0, top10:0};
     const curveIdx = accts[0] > 2e8 ? 1 : 0;              // >200M tokens = the curve
     const rest = accts.slice(curveIdx);
-    const top10 = rest.slice(0,10).reduce((a,b)=>a+b,0)/1e9;
-    return {holders: rest.length, top10, capped: rest.length>=19};
-  }catch(e){ return {holders:null, top10:null}; }
+    const top10sum = rest.slice(0,10).reduce((a,b)=>a+b,0), heldSum = rest.reduce((a,b)=>a+b,0);
+    const top10 = top10sum/1e9;                                   // share of total supply (Terminal-style)
+    const top10h = heldSum>0 ? top10sum/heldSum : null;           // share of tokens held by traders (Dune-style; RPC returns max 20 accounts)
+    return {holders: rest.length, top10, top10h, heldPct: heldSum/1e9, capped: rest.length>=19};
+  }catch(e){ return {holders:null, top10:null, top10h:null}; }
 }
 // ---------- bundling diagnostics (tracked, not traded on) ----------
 const BQ = []; let bBusy = false;
@@ -379,7 +385,7 @@ async function tick(){
     const due = Object.values(coins).filter(c=>!c.evald && now - c.t0 >= EVAL_AT_MS && c.curve);
     // open positions
     const openMints = {}; for (const k in S.open) openMints[S.open[k].mint] = true;
-    const track = Object.values(coins).filter(c=>openMints[c.mint] && c.curve && !c.migrated);
+    const track = Object.values(coins).filter(c=>c.curve && !c.migrated && (openMints[c.mint] || (c.out && !c.out.done)));
     const curves = [...new Set([...due.map(c=>c.curve), ...track.map(c=>c.curve)])].slice(0, MAX_TRACK);
     let prices = {};
     if (curves.length) { try{ prices = await curvePrices(curves); }catch(e){ S.rpcErrors=(S.rpcErrors||0)+1; log('price fetch failed: '+e.message); } }
@@ -394,11 +400,13 @@ async function tick(){
       if (c.mv10>3 && c.txs10<5) { c.skipped='bad-parse'; return; }   // curve layout we do not understand
       if (!(c.mc10>5 && c.mc10<5000)) { c.skipped='mc-range'; return; }
       c.rSol = p.rSol; const su = await solUsd(); c.mcUsd = su ? c.mc10*su : null;
-      const hs = await holderStats(c.mint); c.holders = hs.holders; c.top10 = hs.top10;
+      const hs = await holderStats(c.mint); c.holders = hs.holders; c.top10 = hs.top10; c.top10h = hs.top10h; c.heldPct = hs.heldPct; c.capped = !!hs.capped;
+      // outcome tracking for every coin in the Dune universe (mc 25–120 SOL), trades or not
+      if (c.mc10>=25 && c.mc10<=120 && Object.values(coins).filter(x=>x.out && !x.out.done).length < 150) c.out = {t0:now, p0:c.mc10, peak:c.mc10, trough:c.mc10, done:false};
       // Your Terminal "New" filters, as far as they can be checked on-chain at 10 s:
       // pump.fun only, mayhem hidden, mcap $3K-$15K, txns >= 5, volume >= $500 (proxy: >= 2 SOL net into the curve), top-10 holders <= 60%, dev <= 10%.
       c.uni = !c.mayhem && c.mcUsd!=null && c.mcUsd>=3000 && c.mcUsd<=15000 && c.txs10>=5 && c.rSol>=2 && (c.top10==null || c.top10<=0.60) && c.devPct<=0.10;
-      const f = {uni:c.uni, holders:c.holders==null?Math.max(0,Math.round((c.txs10||0)*0.6)):c.holders, txs10:c.txs10, mv10:c.mv10, twitter:!!c.twitter, website:!!c.website, devBuySol:c.devBuySol, mc10:c.mc10, mc0:c.mc0, sample:(S.seen%3===0), sampleAll:(S.seen%40===0)};
+      const f = {uni:c.uni, mayhem:!!c.mayhem, top10h:c.top10h, capped:c.capped, holders:c.holders==null?Math.max(0,Math.round((c.txs10||0)*0.6)):c.holders, txs10:c.txs10, mv10:c.mv10, twitter:!!c.twitter, website:!!c.website, devBuySol:c.devBuySol, mc10:c.mc10, mc0:c.mc0, sample:(S.seen%3===0), sampleAll:(S.seen%40===0)};
       let main=false;
       for (const st of STRATS){
         let ok=false; try{ ok = st.entry(f,cfg); }catch(e){}
@@ -416,6 +424,16 @@ async function tick(){
       }catch(e){ S.rpcErrors=(S.rpcErrors||0)+1; c.skipped='eval-error'; }
     };
     for (let i=0;i<due.length;i+=3) await Promise.all(due.slice(i,i+3).map(evalOne));
+    // outcome paths for every universe coin (peak / trough / marks at 1,5,15,30,60 min), independent of trades
+    for (const c of track){
+      const o = c.out; if (!o || o.done) continue;
+      const p = prices[c.curve]; if (!p) continue;
+      if (p.complete) { o.migrated = true; o.done = true; continue; }
+      const px = p.mcSol, age = (now - o.t0)/1000;
+      if (px > o.peak) { o.peak = px; o.tPeak = Math.round(age); } if (px < o.trough) o.trough = px;
+      for (const m of [1,5,15,30,60]) if (age >= m*60 && o['p'+m]==null) o['p'+m] = px;
+      if (age >= 3600) o.done = true;
+    }
     // manage open positions
     for (const key of Object.keys(S.open)){
       try{
@@ -519,8 +537,8 @@ function render(){
 }
 function renderPhoneLink(){ const el=$('phoneLink'); if(cfg.gistId){ const u = location.origin+location.pathname+'#g='+cfg.gistId; el.innerHTML = 'Phone link (add to Home Screen): <a href="'+u+'">'+u+'</a>'; } else el.textContent='Phone link appears after the first publish (needs a token).'; }
 function exportCsv(){
-  const rows = Object.values(coins).sort((a,b)=>a.t0-b.t0).map(c=>[new Date(c.t0).toISOString(),c.mint,(c.sym||'').replace(/[",]/g,' '),c.mc0&&c.mc0.toFixed(2),c.devBuySol&&c.devBuySol.toFixed(3),c.twitter?1:0,c.website?1:0,c.txs10==null?'':c.txs10,c.holders==null?'':c.holders,c.top10==null?'':(100*c.top10).toFixed(1),(100*(c.devPct||0)).toFixed(2),c.rSol==null?'':c.rSol.toFixed(2),c.mcUsd==null?'':Math.round(c.mcUsd),c.mc10==null?'':c.mc10.toFixed(2),c.mv10==null?'':c.mv10.toFixed(3),c.uni?1:0,c.entered||0,...(c.bundle&&c.bundle.flags!=null?[c.bundle.flags,c.bundle.dupTokenBal,c.bundle.dupSolBal,c.bundle.freshTop,c.bundle.sameFunderMax,c.bundle.distinctFunders,(100*(c.bundle.top3Share||0)).toFixed(1),c.bundle.medianSol]:['','','','','','','',''])].join(','));
-  const csv = 'created_utc,mint,symbol,mc0_sol,dev_buy_sol,has_twitter,has_website,txs_first10s,holders_10s,top10_pct,dev_pct,sol_in_curve_10s,mc10_usd,mc10_sol,move_10s,passes_filters,strategies_entered,bundle_flags,dup_token_balances,dup_sol_balances,fresh_wallets_top8,same_funder_max,distinct_funders,top3_share_pct,median_holder_sol\n'+rows.join('\n');
+  const rows = Object.values(coins).sort((a,b)=>a.t0-b.t0).map(c=>[new Date(c.t0).toISOString(),c.mint,(c.sym||'').replace(/[",]/g,' '),c.mc0&&c.mc0.toFixed(2),c.devBuySol&&c.devBuySol.toFixed(3),c.twitter?1:0,c.website?1:0,c.txs10==null?'':c.txs10,c.holders==null?'':c.holders,c.top10==null?'':(100*c.top10).toFixed(1),(100*(c.devPct||0)).toFixed(2),c.rSol==null?'':c.rSol.toFixed(2),c.mcUsd==null?'':Math.round(c.mcUsd),c.mc10==null?'':c.mc10.toFixed(2),c.mv10==null?'':c.mv10.toFixed(3),c.uni?1:0,c.entered||0,c.top10h==null?'':(100*c.top10h).toFixed(1),c.heldPct==null?'':(100*c.heldPct).toFixed(2),c.capped?1:0,...(c.out?[(c.out.peak/c.out.p0).toFixed(3),(c.out.trough/c.out.p0).toFixed(3),c.out.tPeak||'',...[1,5,15,30,60].map(m=>c.out['p'+m]==null?'':(c.out['p'+m]/c.out.p0).toFixed(3)),c.out.migrated?1:0]:['','','','','','','','','']),...(c.bundle&&c.bundle.flags!=null?[c.bundle.flags,c.bundle.dupTokenBal,c.bundle.dupSolBal,c.bundle.freshTop,c.bundle.sameFunderMax,c.bundle.distinctFunders,(100*(c.bundle.top3Share||0)).toFixed(1),c.bundle.medianSol]:['','','','','','','',''])].join(','));
+  const csv = 'created_utc,mint,symbol,mc0_sol,dev_buy_sol,has_twitter,has_website,txs_first10s,holders_10s,top10_pct,dev_pct,sol_in_curve_10s,mc10_usd,mc10_sol,move_10s,passes_filters,strategies_entered,top10_of_float_pct,float_held_pct,holders_capped20,out_peak_x,out_trough_x,out_peak_sec,out_1m_x,out_5m_x,out_15m_x,out_30m_x,out_60m_x,out_migrated,bundle_flags,dup_token_balances,dup_sol_balances,fresh_wallets_top8,same_funder_max,distinct_funders,top3_share_pct,median_holder_sol\n'+rows.join('\n');
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'})); a.download = 'trench_coins.csv'; a.click();
 }
 
